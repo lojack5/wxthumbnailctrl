@@ -4,7 +4,7 @@ Pulls everything together in the thumbnail control.
 from __future__ import annotations
 
 __all__ = [
-    'ThumbnailControl',
+    'ThumbnailCtrl',
 ]
 
 import concurrent.futures as futures
@@ -56,7 +56,7 @@ class HitTest:
 
 
 class ThumbnailDropTarget(wx.FileDropTarget):
-    def __init__(self, control: ThumbnailControl) -> None:
+    def __init__(self, control: ThumbnailCtrl) -> None:
         super().__init__()
         self.SetDefaultAction(wx.DragMove)
         self.control = control
@@ -101,7 +101,7 @@ class ThumbnailDropTarget(wx.FileDropTarget):
 DEFAULT_IMAGE_HANDLER = imagehandler.NativeImageHandler()
 
 
-class ThumbnailControl(wx.ScrolledWindow):
+class ThumbnailCtrl(wx.ScrolledWindow):
     extensions: frozenset[str] = frozenset(
         {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif'}
     )
@@ -148,6 +148,8 @@ class ThumbnailControl(wx.ScrolledWindow):
         """Draw a shadow under the thumbnails for a 3D effect."""
         show_filenames: Callable[[Thumb], str] | Literal[False] = format_filename
         """Whether filenames should be included under the thumbnail."""
+        edit_filenames: bool = False
+        """Whether filenames are editable."""
         show_tooltip: bool = True
         """Whether a tooltip should popup with more image information."""
         tooltip_delay_ms: int = 1000
@@ -202,6 +204,8 @@ class ThumbnailControl(wx.ScrolledWindow):
         '__rows',
         '__thumb_paint_size',
         '__tip_window',
+        '__edit_ctrl',
+        '__edit_index',
     )
     __options: Options
     __thumbs: list[Thumb]
@@ -217,6 +221,8 @@ class ThumbnailControl(wx.ScrolledWindow):
     __rows: int
     __thumb_paint_size: tuple[int, int]
     __tip_window: wx.ToolTip
+    __edit_ctrl: wx.TextCtrl
+    __edit_index: int
 
     def __init__(
         self,
@@ -247,7 +253,10 @@ class ThumbnailControl(wx.ScrolledWindow):
         self.__tip_window.Enable(False)
         self.SetToolTip(self.__tip_window)
         self.__shadow = wx.MemoryDC(data.getShadow()[2])
-        self.__thumb_paint_size = options.thumb_size  # estimate
+        self.__thumb_paint_size = options.thumb_size  # estimated
+        self.__edit_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER|wx.BORDER_SIMPLE)
+        self.__edit_ctrl.Hide()
+        self.__edit_index = -1
         # Bind events: Resize and painting
         self.Bind(wx.EVT_SIZE, self.__on_size)
         self.Bind(wx.EVT_PAINT, self.__on_paint)
@@ -268,6 +277,11 @@ class ThumbnailControl(wx.ScrolledWindow):
         self.Bind(wx.EVT_KEY_DOWN, self.__on_key)
         # For thread management
         self.Bind(wx.EVT_CLOSE, self.__on_close)
+        # Edit control
+        self.__edit_ctrl.Bind(wx.EVT_TEXT_ENTER, self.__on_edit_enter)
+        self.__edit_ctrl.Bind(wx.EVT_TEXT, self.__on_edit_text)
+        self.__edit_ctrl.Bind(wx.EVT_KILL_FOCUS, self.__on_edit_kill_focus)
+        self.__edit_ctrl.Bind(wx.EVT_CHAR, self.__on_edit_char)
         # Initialize size parameters, images, etc
         self.set_options(options)
 
@@ -504,23 +518,46 @@ class ThumbnailControl(wx.ScrolledWindow):
         dc.DrawBitmap(image, image_rect.x, image_rect.y, useMask=True)
         # 5: Draw the filename
         if self.__options.show_filenames:
-            text = fulltext = self.__options.show_filenames(thumb)
             max_width = selection_rect.width - self.__options.thumb_spacing
-            text_x, text_y = dc.GetTextExtent(text)
-            for lop in range(1, len(text)):
-                if text_x <= max_width:
-                    break
-                text = fulltext[:-lop].rstrip('. \t') + '...'
-                text_x, _ = dc.GetTextExtent(text)
+            if index == self.__edit_index:
+                text = self.__edit_ctrl.GetValue()
+                text_x, text_y = self.__edit_ctrl.GetTextExtent(text)
+                text_x += 10
+                sel = self.__edit_ctrl.GetSelection()
+                scr = self.__edit_ctrl.GetScrollPos(wx.HORIZONTAL)
+                self.__edit_ctrl.SetClientSize(text_x, text_y)
+                if self.__edit_ctrl.GetSize()[0] > max_width:
+                    self.__edit_ctrl.SetSize(max_width, text_y)
+                self.__edit_ctrl.SetSelection(*sel)
+                self.__edit_ctrl.SetScrollPos(wx.HORIZONTAL, scr)
+                y = min(bitmap_size[1] - text_y - 4, image_rect.bottom + 7)
+                offset = (selection_rect.GetWidth() - self.__edit_ctrl.GetSize()[0]) // 2
+                th_rect = self.__get_thumb_rect(index)
+                paint_x = self.__thumb_paint_size[0]
+                client_w, _ = self.GetClientSize()
+                extra_space = client_w - self.__options.thumb_spacing - self.__cols * paint_x
+                extra_pad = extra_space // (self.__cols + 1)
+                x_pos = th_rect.GetLeft() + selection_rect.GetLeft() + offset + extra_pad // 2
+                self.__edit_ctrl.SetPosition((x_pos, th_rect.y + y))
+                self.__edit_ctrl.Show()
+                self.__edit_ctrl.Refresh()
+                self.__edit_ctrl.Update()
             else:
-                text = ''
-            if text:
-                dc.SetFont(wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT))
-                dc.SetTextForeground(self.__get_thumb_text_color(thumb))
-                image_rect.y = min(bitmap_size[1] - text_y - 4, image_rect.bottom + 7)
-                image_rect.height = text_y
-                dc.DrawLabel(text, image_rect, wx.ALIGN_CENTER)
-                # dc.DrawText(text, selection_rect.x + offset, image_rect.bottom + 2)
+                text = fulltext = self.__options.show_filenames(thumb)
+                text_x, text_y = dc.GetTextExtent(text)
+                for lop in range(1, len(text)):
+                    if text_x <= max_width:
+                        break
+                    text = fulltext[:-lop].rstrip('. \t') + '...'
+                    text_x, _ = dc.GetTextExtent(text)
+                else:
+                    text = ''
+                if text:
+                    dc.SetFont(wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT))
+                    dc.SetTextForeground(self.__get_thumb_text_color(thumb))
+                    image_rect.y = min(bitmap_size[1] - text_y - 4, image_rect.bottom + 7)
+                    image_rect.height = text_y
+                    dc.DrawLabel(text, image_rect, wx.ALIGN_CENTER)
         # Done
         dc.SelectObject(wx.NullBitmap)
         dc.Destroy()
@@ -563,10 +600,10 @@ class ThumbnailControl(wx.ScrolledWindow):
         # Get only the area that needs repainting
         region_iterator = wx.RegionIterator(self.GetUpdateRegion())
         # TODO: Optimize futher than just this?
-        paint_rects = []
+        paint_rects: list[wx.Rect] = []
         max_paint_rect = self.__get_paint_rect()
         while region_iterator.HaveRects():
-            rect = region_iterator.GetRect()
+            rect: wx.Rect = region_iterator.GetRect()
             tl = rect.GetTopLeft()
             br = rect.GetBottomRight()
             tl = self.CalcUnscrolledPosition(tl)
@@ -673,6 +710,7 @@ class ThumbnailControl(wx.ScrolledWindow):
     def __on_mouse_down(self, event: wx.MouseEvent) -> None:
         """Handle left clicking pressed down."""
         last_focus = self.__focused_idx
+        self.__stop_editing(False)
         test = self.HitTest(*event.GetPosition())
         if test.flags == HitFlag.CENTER:
             self.__focused_idx = test.index
@@ -1428,3 +1466,45 @@ class ThumbnailControl(wx.ScrolledWindow):
         else:
             self.__refresh_by_index(*indices)
 
+    def begin_edit(self, index: int) -> wx.TextCtrl | None:
+        if not (format_fname := self.__options.show_filenames):
+            return None
+        thumb = self.__thumbs[index]
+        text = format_fname(thumb)
+        ext_i = text.rfind('.')
+        self.__edit_index = index
+        self.__edit_ctrl.SetValue(text)
+        self.__edit_ctrl.SetSelection(0, ext_i)
+        self.__edit_ctrl.SetScrollPos(wx.HORIZONTAL, 0)
+        self.__edit_ctrl.SetFocus()
+        self.__refresh_by_index(index)
+        return self.__edit_ctrl
+
+    def __on_edit_enter(self, event: wx.CommandEvent) -> None:
+        self.__stop_editing(True)
+        event.Skip()
+
+    def __stop_editing(self, notify: bool) -> None:
+        self.__edit_ctrl.Hide()
+        self.SetFocusFromKbd()
+        self.__refresh_by_index(self.__edit_index)
+        thumb = self.__thumbs[self.__edit_index]
+        self.__edit_index = -1
+        if notify:
+            event = events.ThumbnailEvent(events.thumbEVT_THUMBCTRL_LABEL_EDIT_END, self.GetId(), [thumb])
+            event.SetString(self.__edit_ctrl.GetValue())
+            self.GetEventHandler().ProcessEvent(event)
+
+    def __on_edit_text(self, event: wx.CommandEvent) -> None:
+        self.__refresh_by_index(self.__edit_index)
+        event.Skip()
+
+    def __on_edit_kill_focus(self, event: wx.FocusEvent) -> None:
+        self.__stop_editing(False)
+        event.Skip()
+
+    def __on_edit_char(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.__stop_editing(False)
+        else:
+            event.Skip()
