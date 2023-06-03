@@ -50,12 +50,16 @@ class ImageHandler(Protocol):
     def rotate(self, image: wx.Image, ccw_degrees: float) -> wx.Image:
         ...
 
+    def reflect(self, image: wx.Image, horizontal: bool) -> wx.Image:
+        ...
+
 
 class CachingImageHandler(ImageHandler):
     def __init__(self, handler: ImageHandler, cache_size: int) -> None:
         self.load_image = functools.lru_cache(maxsize=cache_size)(handler.load_image)
         self.highlight = handler.highlight
         self.rotate = handler.rotate
+        self.reflect = handler.reflect
 
 
 class MaxSizeImageHandler(ImageHandler):
@@ -67,6 +71,7 @@ class MaxSizeImageHandler(ImageHandler):
         self.max_h = max_h
         self.highlight = handler.highlight
         self.rotate = handler.rotate
+        self.reflect = handler.reflect
 
     def load_image(self, image_path: StrPath) -> wx.Image:
         image = self.handler.load_image(image_path)
@@ -110,7 +115,11 @@ class NativeImageHandler(ImageHandler):
     def rotate(self, image: wx.Image, ccw_degrees: float) -> wx.Image:
         """Rotate an image counter-clockwise by a given angle in degress."""
         rads = math.radians(ccw_degrees)
-        return image.Rotate(rads, image.GetSize(), True)
+        return image.Rotate(rads, (image.GetWidth(), image.GetHeight()), True)
+
+    def reflect(self, image: wx.Image, horizontal: bool) -> wx.Image:
+        """Reflect an image horizontally or vertically."""
+        return image.Mirror(horizontal)
 
 
 try:

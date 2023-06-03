@@ -187,6 +187,7 @@ class Thumb:
         self, ccw_angle: float, handler: imagehandler.ImageHandler = _IMAGE_HANDLER
     ) -> None:
         """Rotate the image counter-clockwise by an angle."""
+        self._bitmap = None
         self._image = handler.rotate(self._image, ccw_angle)
         self._dimensions = tuple(self._image.GetSize())
 
@@ -201,3 +202,8 @@ class Thumb:
         image = self.get_thumbnail(width, height)
         image = handler.highlight(image, factor)
         return image.ConvertToBitmap()
+
+    def reflect(self, horizonal: bool = True, handler: imagehandler.ImageHandler = _IMAGE_HANDLER) -> None:
+        self._bitmap = None
+        self._image = handler.reflect(self._image, horizonal)
+        self._dimensions = tuple(self._image.GetSize())

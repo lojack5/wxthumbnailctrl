@@ -2,6 +2,7 @@
 Pulls everything together in the thumbnail control.
 """
 from __future__ import annotations
+import math
 
 __all__ = [
     'ThumbnailCtrl',
@@ -352,13 +353,13 @@ class ThumbnailCtrl(wx.ScrolledWindow):
             paint_y += self.__get_filename_height()
         # Final size: cols * paint_x + padding around the outside, plus some
         # space for a scrollbar
-        minx = paint_x + self.__options.thumb_spacing + 16
-        miny = paint_y + self.__options.thumb_spacing
         self.SetVirtualSize(
-            max(self.__cols * paint_x + self.__options.thumb_spacing + 16, minx),
-            max(self.__rows * paint_y + self.__options.thumb_spacing, miny),
+            self.__cols * paint_x + spacing + 16,
+            self.__rows * paint_y + spacing,
         )
         # Minimum size is to fit one thumbnail
+        minx = paint_x + spacing + 16
+        miny = paint_y + spacing
         self.SetSizeHints(minx, miny)
         self.SetScrollRate(paint_x, paint_y // 9)
         self.__thumb_paint_size = (paint_x, paint_y)
@@ -602,6 +603,8 @@ class ThumbnailCtrl(wx.ScrolledWindow):
         # TODO: Optimize futher than just this?
         paint_rects: list[wx.Rect] = []
         max_paint_rect = self.__get_paint_rect()
+        ux = uy = math.inf # upper left
+        ur = ub = 0        # bottom right
         while region_iterator.HaveRects():
             rect: wx.Rect = region_iterator.GetRect()
             tl = rect.GetTopLeft()
@@ -612,15 +615,16 @@ class ThumbnailCtrl(wx.ScrolledWindow):
             rect.Intersect(max_paint_rect)
             if not rect.IsEmpty():
                 paint_rects.append(rect)
+                ux = min(rect.x, ux)
+                uy = min(rect.y, uy)
+                ur = max(rect.right, ur)
+                ub = max(rect.bottom, ub)
             region_iterator.Next()
         if not paint_rects:
             return
-        # Faster than calling .Union each time
-        ux = min(rect.x for rect in paint_rects)
-        uy = min(rect.y for rect in paint_rects)
-        ul = max(rect.left for rect in paint_rects)
-        ub = max(rect.bottom for rect in paint_rects)
-        union_rect = wx.Rect((ux, uy), (ul, ub))
+        ux = int(ux)
+        uy = int(uy)
+        union_rect = wx.Rect((ux, uy), (ur, ub))
         # 1: Draw the thumbnails
         paint_x, paint_y = self.__thumb_paint_size
         client_w, client_h = self.GetClientSize()
@@ -655,7 +659,6 @@ class ThumbnailCtrl(wx.ScrolledWindow):
             bitmap = wx.Bitmap(*self.__thumb_paint_size)
             self.__paint_thumbnail(bitmap, thumb, i)
             dc.DrawBitmap(bitmap, thumb_x + extra_pad // 2, thumb_y)
-
         # Maybe not fully drawn on the last row though... deal with it after
         drawn_w = self.__cols * paint_x
         drawn_h = self.__rows * paint_y
@@ -671,7 +674,7 @@ class ThumbnailCtrl(wx.ScrolledWindow):
             drawn_rect.GetRight(), 0, w - drawn_rect.GetRight(), h + 50
         )  # Right
         dc.DrawRectangle(
-            0, drawn_rect.GetBottom(), w, h - drawn_rect.GetBottom() + 50
+            0, drawn_rect.GetBottom(), w, max_paint_rect.GetBottom() - drawn_rect.GetBottom() + 1
         )  # Bottom
         # 3: And fill in any "missing" thumbnails
         extra = len(self.__thumbs) % self.__cols
@@ -917,43 +920,34 @@ class ThumbnailCtrl(wx.ScrolledWindow):
                 self.zoom(out=False)
             else:
                 self.zoom(out=True)
+        elif event.GetWheelAxis() == wx.MOUSE_WHEEL_VERTICAL:
+            # ScrolledWindow animates too slowly for my taste, so roll our own:
+            # Scroll
+            lines = (
+                event.GetWheelRotation()
+                // event.GetWheelDelta()
+                * event.GetLinesPerAction()
+            )
+            xstart, ystart = self.GetViewStart()
+            self.Scroll(xstart, ystart - lines)
+            # Hover detect
+            self.__do_hover_detection(*event.GetPosition())
+            # Redraw leaving/entering area:
+            # The amount scrolled might have been limited by the ends of
+            # of the scrollbar
+            _, yend = self.GetViewStart()
+            lines = yend - ystart
+            _, dy = self.GetScrollPixelsPerUnit()
+            refresh_rect = self.__get_paint_rect()
+            if lines < 0:
+                refresh_rect.y = refresh_rect.bottom - (lines * dy) - 20
+            refresh_rect.height = lines * dy + 20
+            self.RefreshRect(refresh_rect)
+            # Update drag selection
+            if self.__drag_selecting_start:
+                self.RefreshRect(self.__drag_selection_rect())
         else:
-            # ScrolledWindow animates too slowly, so roll our own:
-            if event.GetWheelAxis() == wx.MOUSE_WHEEL_VERTICAL:
-                # Scroll
-                lines = (
-                    event.GetWheelRotation()
-                    // event.GetWheelDelta()
-                    * event.GetLinesPerAction()
-                )
-                xstart, ystart = self.GetViewStart()
-                w, h = self.GetClientSize()
-                self.Scroll(xstart, ystart - lines)
-                self.SetScrollPos(
-                    wx.VERTICAL,
-                    self.GetScrollPos(wx.VERTICAL)
-                    - event.GetWheelRotation() // event.GetWheelDelta(),
-                )
-                # Hover detect
-                self.__do_hover_detection(*event.GetPosition())
-                # Redraw leaving/entering area:
-                # The amount scrolled might have been limited by the ends of
-                # of the scrollbar
-                _, yend = self.GetViewStart()
-                lines = yend - ystart
-                _, dy = self.GetScrollPixelsPerUnit()
-                px_y = -lines * dy
-                leaving_rect = wx.Rect(xstart, ystart - 20, w, px_y + 20)
-                entering_rect = wx.Rect(xstart, ystart + h, w, px_y + 20)
-                # Update drag selection
-                if self.__drag_selecting_start:
-                    self.RefreshRect(self.__drag_selection_rect())
-                if lines > 0:
-                    self.RefreshRect(leaving_rect)
-                else:
-                    self.RefreshRect(entering_rect)
-            else:
-                event.Skip()
+            event.Skip()
 
     def __on_scroll(self, event: wx.ScrollWinEvent) -> None:
         event.Skip()
